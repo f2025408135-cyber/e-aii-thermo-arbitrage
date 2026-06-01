@@ -1,7 +1,7 @@
 """
-E-AII Streamlit desktop GUI.
+E-AII Streamlit desktop GUI (Broker Desk Pivot).
 Implements the Secure Credential Vault, Async Core Control Deck, and Live Refresh Monitoring Matrix.
-Consumes the adaptive-sizing guardrails ($4,000 trade cap, triple-gate logic, TEMA filter).
+Consumes the adaptive-sizing guardrails (dynamic ADV cap, triple-gate logic, TEMA filter).
 """
 
 import sys
@@ -24,7 +24,6 @@ def auto_install_dependencies():
             try:
                 subprocess.check_call([sys.executable, "-m", "pip", "install", pkg, "--quiet"])
             except Exception as e:
-                # Log to a file if possible
                 try:
                     with open("gui_runtime_error.log", "a") as f:
                         f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Auto-install failed for {pkg}: {e}\n")
@@ -39,7 +38,7 @@ import streamlit as st
 
 # Configure page settings
 st.set_page_config(
-    page_title="E-AII Thermodynamic Desk",
+    page_title="E-AII Brokerage Arbitrage Desk",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -118,7 +117,9 @@ def load_cached_credentials() -> dict:
     defaults = {
         "AWS_ACCESS_KEY": "MOCK_AWS_ACCESS_KEY",
         "AWS_SECRET_KEY": "MOCK_AWS_SECRET_KEY",
-        "VASTAI_API_KEY": "",
+        "BROKER_API_BASE_URL": "https://api.interactivebrokers.com",
+        "BROKER_ACCOUNT_ID": "U1234567",
+        "BROKER_OAUTH_TOKEN": "",
         "DEEPSEEK_V4_API_KEY": "MOCK_DEEPSEEK_V4_API_KEY",
         "OPENCODE_ZEN_API_KEY": "",
         "GROQ_API_KEY": "",
@@ -276,7 +277,9 @@ inputs_disabled = st.session_state.bot_running
 
 aws_access_key = st.sidebar.text_input("AWS Access Key ID", value=cached_creds.get("AWS_ACCESS_KEY", ""), type="password", disabled=inputs_disabled)
 aws_secret_key = st.sidebar.text_input("AWS Secret Access Key", value=cached_creds.get("AWS_SECRET_KEY", ""), type="password", disabled=inputs_disabled)
-vastai_api_key = st.sidebar.text_input("Vast.ai API Key", value=cached_creds.get("VASTAI_API_KEY", ""), type="password", disabled=inputs_disabled)
+broker_url = st.sidebar.text_input("Broker API Base URL", value=cached_creds.get("BROKER_API_BASE_URL", ""), disabled=inputs_disabled)
+broker_account = st.sidebar.text_input("Broker Account ID", value=cached_creds.get("BROKER_ACCOUNT_ID", ""), disabled=inputs_disabled)
+broker_token = st.sidebar.text_input("OAuth Bearer Token", value=cached_creds.get("BROKER_OAUTH_TOKEN", ""), type="password", disabled=inputs_disabled)
 deepseek_api_key = st.sidebar.text_input("DeepSeek V4 API Key", value=cached_creds.get("DEEPSEEK_V4_API_KEY", ""), type="password", disabled=inputs_disabled)
 
 st.sidebar.markdown(
@@ -297,7 +300,9 @@ openrouter_api_key = st.sidebar.text_input("OpenRouter API Key", value=cached_cr
 # Save on edit
 if (aws_access_key != cached_creds.get("AWS_ACCESS_KEY") or
     aws_secret_key != cached_creds.get("AWS_SECRET_KEY") or
-    vastai_api_key != cached_creds.get("VASTAI_API_KEY") or
+    broker_url != cached_creds.get("BROKER_API_BASE_URL") or
+    broker_account != cached_creds.get("BROKER_ACCOUNT_ID") or
+    broker_token != cached_creds.get("BROKER_OAUTH_TOKEN") or
     deepseek_api_key != cached_creds.get("DEEPSEEK_V4_API_KEY") or
     opencode_api_key != cached_creds.get("OPENCODE_ZEN_API_KEY") or
     groq_api_key != cached_creds.get("GROQ_API_KEY") or
@@ -306,7 +311,9 @@ if (aws_access_key != cached_creds.get("AWS_ACCESS_KEY") or
     save_credentials({
         "AWS_ACCESS_KEY": aws_access_key,
         "AWS_SECRET_KEY": aws_secret_key,
-        "VASTAI_API_KEY": vastai_api_key,
+        "BROKER_API_BASE_URL": broker_url,
+        "BROKER_ACCOUNT_ID": broker_account,
+        "BROKER_OAUTH_TOKEN": broker_token,
         "DEEPSEEK_V4_API_KEY": deepseek_api_key,
         "OPENCODE_ZEN_API_KEY": opencode_api_key,
         "GROQ_API_KEY": groq_api_key,
@@ -324,7 +331,7 @@ class AsyncBotRunner:
 
     def run(self):
         import random
-        # Imports the defensive production bot
+        # Imports the defensive production bot pivoted to financial order routing
         from e_aii_engine.thermo_arbitrage_bot import ThermodynamicArbitrageBot
         self.bot = ThermodynamicArbitrageBot()
         
@@ -336,7 +343,6 @@ class AsyncBotRunner:
             df = pd.read_csv(telemetry_path)
             num_rows = len(df)
         except Exception as e:
-            # Safe exit
             with open("gui_runtime_error.log", "a") as f:
                 f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Telemetry Ingestion Failed: {e}\n")
             return
@@ -416,14 +422,14 @@ def get_runner():
 
 runner = get_runner()
 
-# Continuous Runtime State Preservation: Sync session state with global cached runner thread status
+# Continuous Runtime State Preservation
 if "trading_thread_active" not in st.session_state:
     st.session_state.trading_thread_active = False
 
 st.session_state.bot_running = runner.running
 st.session_state.trading_thread_active = runner.running
 
-# Sidebar Simulation Setup (placed after runner is defined)
+# Sidebar Simulation Setup
 st.sidebar.markdown(
     """
     <div style='text-align: center; margin-top: 1.0rem;'>
@@ -437,7 +443,7 @@ inject_volatility = st.sidebar.checkbox("🔹 Inject Simulation Volatility Clust
 runner.inject_volatility = inject_volatility
 
 # UI Layout
-st.markdown('<div class="title-text">⚡ E-AII DUAL-LAYER CONSOLE DESK</div>', unsafe_allow_html=True)
+st.markdown('<div class="title-text">⚡ E-AII BROKERAGE PORTFOLIO DESK</div>', unsafe_allow_html=True)
 
 # Async Control Deck
 c1, c2 = st.columns([3, 1])
@@ -446,8 +452,8 @@ with c1:
     if not st.session_state.bot_running:
         start_btn = st.button("🚀 START AUTONOMOUS ENGINE", use_container_width=True, type="primary")
         if start_btn:
-            if not vastai_api_key:
-                st.warning("Please supply at least the Vast.ai API Key in the vault first.")
+            if not broker_token or not broker_account:
+                st.warning("Please supply the Broker Account ID and OAuth Bearer Token in the vault first.")
             else:
                 st.session_state.bot_running = True
                 with runner.lock:
@@ -492,7 +498,6 @@ try:
                 latest = ledger_data[-1]
                 current_bankroll = latest.get("bankroll", 10.00)
                 current_cash_pool = latest.get("cash_pool", 0.00)
-                # Display target validated TEMA metrics
                 current_mape = 4.88
 except Exception:
     pass
@@ -501,7 +506,7 @@ with m_col1:
     st.markdown(
         f"""
         <div class="metric-card">
-            <div class="metric-title">Deployed Bankroll</div>
+            <div class="metric-title">Trading Bankroll</div>
             <div class="metric-val metric-cyan">${current_bankroll:.2f}</div>
         </div>
         """,
@@ -512,7 +517,7 @@ with m_col2:
     st.markdown(
         f"""
         <div class="metric-card">
-            <div class="metric-title">Overflow Cash Pool</div>
+            <div class="metric-title">Overflow Collateral Pool</div>
             <div class="metric-val metric-green">${current_cash_pool:.2f}</div>
         </div>
         """,
@@ -542,7 +547,7 @@ with m_col4:
     )
 
 st.markdown("<br/>", unsafe_allow_html=True)
-t1, t2, t3 = st.tabs(["📈 Trajectory Signals", "📋 Live Transaction Ledger", "🤖 E-AII Copilot"])
+t1, t2, t3 = st.tabs(["📈 Portfolio Trajectory", "📋 Live Transaction Ledger", "🤖 E-AII Copilot"])
 
 with t1:
     st.subheader("Model Predictive Control (mpcsignal) Trajectory")
@@ -554,7 +559,7 @@ with t1:
                     chart_records.append({
                         'Tick': record.get('tick', 0),
                         'Realized Net Spread (bps)': record.get('net_spread_bps', 0.0),
-                        'Weighted Venue Slippage (bps)': record.get('weighted_slippage_bps', 0.0)
+                        'Weighted Slippage (bps)': record.get('weighted_slippage_bps', 0.0)
                     })
             if chart_records:
                 chart_df = pd.DataFrame(chart_records).set_index('Tick')
@@ -570,10 +575,23 @@ with t2:
     st.subheader("Completed Trades & Sweeps")
     if ledger_data:
         try:
-            ledger_df = pd.DataFrame(ledger_data)
+            # Reformat columns to represent traditional financial tickers instead of compute nodes
+            display_records = []
+            for record in ledger_data:
+                copied = record.copy()
+                # Rename columns dynamically if they are parsed from the ledger
+                if 'size_pf' in copied:
+                    copied['POWER_FUTURES Size'] = copied.pop('size_pf')
+                if 'size_xle' in copied:
+                    copied['XLE ETF Size'] = copied.pop('size_xle')
+                if 'size_vpu' in copied:
+                    copied['VPU ETF Size'] = copied.pop('size_vpu')
+                display_records.append(copied)
+            
+            ledger_df = pd.DataFrame(display_records)
             st.dataframe(ledger_df, use_container_width=True)
-        except Exception:
-            st.info("Loading ledger dataframe...")
+        except Exception as e:
+            st.info(f"Loading ledger dataframe: {e}")
     else:
         st.info("No ticks executed yet.")
 
@@ -591,7 +609,6 @@ with t3:
             
     # Input field
     if prompt := st.chat_input("Ask the E-AII Copilot..."):
-        # Display user message
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)

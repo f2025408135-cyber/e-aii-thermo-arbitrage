@@ -1,0 +1,46 @@
+{
+  "total_signals": 22,
+  "frictions": {
+    "broker_fee_pct": 0.0005,
+    "spread_slippage_pct": 0.0001,
+    "total_friction_pct": 0.0012000000000000001
+  },
+  "results": {
+    "30m": {
+      "trades_executed": 22,
+      "POWER_FUTURES": {
+        "win_rate": 1.0,
+        "profit_factor": "INF",
+        "max_drawdown": 0.0
+      },
+      "XLE": {
+        "win_rate": 1.0,
+        "profit_factor": "INF",
+        "max_drawdown": 0.0
+      },
+      "Portfolio": {
+        "win_rate": 1.0,
+        "profit_factor": "INF",
+        "max_drawdown": 0.0
+      }
+    },
+    "2h": {
+      "trades_executed": 22,
+      "POWER_FUTURES": {
+        "win_rate": 0.2727272727272727,
+        "profit_factor": 2.890470385741481,
+        "max_drawdown": 52.63818566959959
+      },
+      "XLE": {
+        "win_rate": 0.2727272727272727,
+        "profit_factor": 1.012465899381776,
+        "max_drawdown": 58.33567828653948
+      },
+      "Portfolio": {
+        "win_rate": 0.2727272727272727,
+        "profit_factor": 1.8698119155838535,
+        "max_drawdown": 55.5035197457305
+      }
+    }
+  }
+}

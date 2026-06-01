@@ -14,6 +14,8 @@
 !terminal_agent.py
 !forward_oos_test.py
 !Alpha2_Deep_Specification_Manuscript.md
+!historical_macro_backtester.py
+!broker_pivot_backtest_report.json
 
 # Allow E-AII engine folder and its contents
 !e_aii_engine/

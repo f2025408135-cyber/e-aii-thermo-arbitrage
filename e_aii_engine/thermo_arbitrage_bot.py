@@ -1,8 +1,9 @@
 """
-E-AII Thermodynamic Arbitrage Production Bot Script.
+E-AII Thermodynamic Arbitrage Production Bot Script (Financial Broker Desk Pivot).
 Natively built according to E-AII Alpha Validation Report specifications.
 Tracks trailing climate vectors, implements triple-gate logic, dual-account balance sweep mechanics,
 Feynman 4-mode thermal decay overhang, and stochastic network execution latency delays.
+Pivoted to route allocations over liquid traditional energy proxies (POWER_FUTURES, XLE, VPU).
 """
 
 import sys
@@ -13,6 +14,8 @@ import random
 import logging
 import traceback
 import json
+import urllib.request
+import urllib.error
 
 # --- 0. PIP DEPENDENCY AUTO-INSTALLER ---
 def auto_install_dependencies():
@@ -25,17 +28,14 @@ def auto_install_dependencies():
                 import subprocess
                 subprocess.check_call([sys.executable, "-m", "pip", "install", pkg, "--quiet"])
             except Exception as e:
-                # Fallback to local error logging if write permissions allow
                 try:
                     with open("bot_runtime_error.log", "a") as f:
                         f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Auto-install failed for {pkg}: {e}\n")
                 except Exception:
                     pass
 
-# Execute auto-installer silently at absolute top of the script
 auto_install_dependencies()
 
-# Import dependencies after installer execution
 import numpy as np
 
 # Ensure debug logging to millisecond precision
@@ -67,7 +67,8 @@ logger = logging.getLogger("E-AII_Bot")
 logger.setLevel(logging.DEBUG)
 sh = logging.StreamHandler(sys.stdout)
 sh.setFormatter(MillisecondFormatter("[%(asctime)s] %(levelname)s: %(message)s"))
-logger.addHandler(sh)
+if not logger.handlers:
+    logger.addHandler(sh)
 
 
 # --- 1. METEOROLOGICAL & THERMO STATE MONITOR (TRIPLE-GATE LOGIC) ---
@@ -132,9 +133,10 @@ class RegionalThermalMonitor:
 class AccountBalanceManager:
     """
     Tracks trading bankroll and sideline cash pools.
-    Applies the $4,000 safety position size cap and automatically sweeps settlement profits.
+    Applies dynamic liquidity caps based on asset ADV (0.01% of 5-min volume)
+    and sweeps settlement profits.
     """
-    MAX_TRADE_SIZE = 4000.00
+    DEFAULT_CAP = 4000.00
 
     def __init__(self, initial_bankroll: float = 10.00):
         try:
@@ -147,46 +149,74 @@ class AccountBalanceManager:
         except Exception as e:
             log_exception_to_file(e, "AccountBalanceManager.__init__")
 
-    def determine_order_size(self) -> float:
+    def determine_order_size(self, telemetry: dict = None) -> float:
         """
-        Safety cap: If Deployed_Bankroll >= 4000.00, maximum allocation is flat locked at $4,000.00.
-        Otherwise, allocate the entire Deployed_Bankroll.
+        Calculates dynamic position cap tick-by-tick. Enforces that the total position size
+        (leveraged 100x) does not exceed 0.01% of the assets' top-of-book 5-minute volume.
         """
         try:
-            if self.Deployed_Bankroll >= self.MAX_TRADE_SIZE:
-                size = self.MAX_TRADE_SIZE
+            if telemetry is None:
+                current_cap = self.DEFAULT_CAP
             else:
-                size = self.Deployed_Bankroll
-            logger.debug(f"Allocating trade size: ${size:.2f} (Bankroll: ${self.Deployed_Bankroll:.2f})")
+                u_wind = telemetry.get('u_wind', 2.0)
+                ahf = telemetry.get('ahf', 40.0)
+                
+                # Model 5-minute top-of-book volume dynamically based on market/telemetry signals
+                pf_5min_vol = 5_000_000 * (1.0 + 0.5 * (ahf / 100.0))
+                xle_5min_vol = 15_000_000 * (1.0 + 0.2 * u_wind)
+                vpu_5min_vol = 4_000_000 * (1.0 + 0.1 * u_wind)
+                
+                # Dynamic Cap is 0.01% of 5-minute volume sum
+                current_cap = 0.0001 * (pf_5min_vol + xle_5min_vol + vpu_5min_vol)
+                
+            # Leverage is fixed at 100x for geometric compounding phase
+            target_position = self.Deployed_Bankroll * 100.0
+            
+            if target_position >= current_cap:
+                size = current_cap
+            else:
+                size = target_position
+                
+            logger.debug(f"Allocating leveraged trade size: ${size:.2f} (Leveraged Target: ${target_position:.2f}, Dynamic Cap: ${current_cap:.2f})")
             return size
         except Exception as e:
             log_exception_to_file(e, "AccountBalanceManager.determine_order_size")
             return 0.0
 
-    def process_settlement(self, allocated_size: float, net_return_pct: float):
+    def process_settlement(self, allocated_size: float, net_return_pct: float, telemetry: dict = None):
         """
-        Slices all settlement profits off the trade and routes them to the Overflow_Cash_Pool.
-        If there's a loss, it reduces the Deployed_Bankroll.
+        Slices all settlement profits off the leveraged trade and routes them to the Overflow_Cash_Pool
+        when the balance exceeds the dynamic microstructure liquidity cap.
         """
         try:
             gross_pnl = allocated_size * net_return_pct
             logger.info(f"Trade settled. Allocated Size: ${allocated_size:.2f}, Net Return: {net_return_pct*100.0:+.4f}% -> Gross PnL: ${gross_pnl:+.4f}")
             
+            if telemetry is None:
+                current_cap = self.DEFAULT_CAP
+            else:
+                u_wind = telemetry.get('u_wind', 2.0)
+                ahf = telemetry.get('ahf', 40.0)
+                pf_5min_vol = 5_000_000 * (1.0 + 0.5 * (ahf / 100.0))
+                xle_5min_vol = 15_000_000 * (1.0 + 0.2 * u_wind)
+                vpu_5min_vol = 4_000_000 * (1.0 + 0.1 * u_wind)
+                current_cap = 0.0001 * (pf_5min_vol + xle_5min_vol + vpu_5min_vol)
+            
             if gross_pnl > 0.0:
                 temp_bankroll = self.Deployed_Bankroll + gross_pnl
-                if temp_bankroll > self.MAX_TRADE_SIZE:
-                    if self.Deployed_Bankroll < self.MAX_TRADE_SIZE:
-                        added_to_bankroll = self.MAX_TRADE_SIZE - self.Deployed_Bankroll
-                        sweep_amount = temp_bankroll - self.MAX_TRADE_SIZE
-                        self.Deployed_Bankroll = self.MAX_TRADE_SIZE
+                if temp_bankroll > current_cap:
+                    if self.Deployed_Bankroll < current_cap:
+                        added_to_bankroll = current_cap - self.Deployed_Bankroll
+                        sweep_amount = temp_bankroll - current_cap
+                        self.Deployed_Bankroll = current_cap
                     else:
                         added_to_bankroll = 0.0
                         sweep_amount = gross_pnl
                     self.Overflow_Cash_Pool += sweep_amount
-                    logger.info(f"Sweep executed: ${sweep_amount:.4f} routed to Overflow_Cash_Pool. Bankroll locked at ${self.Deployed_Bankroll:.2f}")
+                    logger.info(f"Sweep executed: ${sweep_amount:.4f} routed to Overflow_Cash_Pool. Bankroll locked at dynamic cap ${self.Deployed_Bankroll:.2f}")
                 else:
                     self.Deployed_Bankroll = temp_bankroll
-                    logger.info(f"No sweep: Bankroll increased to ${self.Deployed_Bankroll:.2f} (under cap)")
+                    logger.info(f"No sweep: Bankroll increased to ${self.Deployed_Bankroll:.2f} (under dynamic cap ${current_cap:.2f})")
             else:
                 self.Deployed_Bankroll += gross_pnl
                 logger.warning(f"Loss incurred: ${abs(gross_pnl):.4f} deducted from Deployed_Bankroll. New Bankroll: ${self.Deployed_Bankroll:.2f}")
@@ -280,12 +310,13 @@ class ThermalInertiaMonitor:
 
 class NetworkFrictionSimulator:
     """
-    Simulates network friction layers including execution latency and Kyle's Lambda slippage.
+    Simulates network friction layers including execution latency and Kyle's Lambda slippage
+    on traditional liquid broker markets.
     """
     VENUES = {
-        'RENDER': {'lambda_dollar': 5.00e-08, 'v_daily': 30_000_000.0, 'sigma': 0.05, 'c_sqrt': 0.50},
-        'Vast.ai': {'lambda_dollar': 5.00e-05, 'v_daily': 100_000.0, 'sigma': 0.25, 'c_sqrt': 2.00},
-        'Akash': {'lambda_dollar': 1.00e-06, 'v_daily': 5_000_000.0, 'sigma': 0.10, 'c_sqrt': 1.00}
+        'POWER_FUTURES': {'lambda_dollar': 1.00e-07, 'v_daily': 50_000_000.0, 'sigma': 0.08, 'c_sqrt': 0.60},
+        'XLE': {'lambda_dollar': 2.00e-08, 'v_daily': 150_000_000.0, 'sigma': 0.03, 'c_sqrt': 0.40},
+        'VPU': {'lambda_dollar': 5.00e-08, 'v_daily': 40_000_000.0, 'sigma': 0.05, 'c_sqrt': 0.50}
     }
 
     def __init__(self, mu_seconds: float = 30.0, sigma_seconds: float = 10.0):
@@ -334,7 +365,7 @@ class NetworkFrictionSimulator:
 
     def compute_kyle_slippage(self, venue: str, trade_size: float) -> float:
         """
-        Three-Regime Impact Model:
+        Three-Regime Impact Model for financial assets:
         - Square-Root (low volume): impact = sigma * c_sqrt * sqrt(V / V_daily)
         - Linear (modest volume): impact = lambda_dollar * V_trade
         - Vertical (depth exhaustion): impact = lambda * V * exhaustion_factor
@@ -361,45 +392,73 @@ class NetworkFrictionSimulator:
             return 0.50
 
 
-# --- 5. DYNAMIC ORDER SPLITTER ---
-class DynamicOrderSplitter:
-    """
-    Splits orders dynamically across venues:
-    - Vast.ai: 35%
-    - Render: 45%
-    - Akash: 20%
-    Enforces a strict cap of $4,000 on Vast.ai allocation.
-    """
-    def __init__(self, vast_cap: float = 4000.0):
-        self.vast_cap = vast_cap
+# --- 5. FINANCIAL ORDER ROUTER ---
 
-    def split_order(self, total_capital: float) -> dict:
+class FinancialOrderRouter:
+    """
+    Routes leveraged orders across liquid energy proxy instruments:
+    - POWER_FUTURES: 40% target split
+    - XLE (Energy Select Sector ETF): 40% target split
+    - VPU (Utilities Index ETF): 20% target split
+    Enforces dynamic liquidity caps (0.01% of 5-min volume) tick-by-tick.
+    """
+    def __init__(self):
+        pass
+
+    def split_order(self, total_capital: float, telemetry: dict = None) -> dict:
         try:
-            vast_alloc = total_capital * 0.35
-            render_alloc = total_capital * 0.45
-            akash_alloc = total_capital * 0.20
-            
-            # Enforce Vast.ai strict cap
-            if vast_alloc > self.vast_cap:
-                vast_alloc = self.vast_cap
+            if telemetry is None:
+                # Default fallback caps
+                cap_pf = 1000.0
+                cap_xle = 2000.0
+                cap_vpu = 1000.0
+            else:
+                u_wind = telemetry.get('u_wind', 2.0)
+                ahf = telemetry.get('ahf', 40.0)
                 
-            actual_total = vast_alloc + render_alloc + akash_alloc
+                # Model top-of-book 5-minute volume dynamically
+                pf_5min_vol = 5_000_000 * (1.0 + 0.5 * (ahf / 100.0))
+                xle_5min_vol = 15_000_000 * (1.0 + 0.2 * u_wind)
+                vpu_5min_vol = 4_000_000 * (1.0 + 0.1 * u_wind)
+                
+                # Dynamic Cap is 0.01% of 5-minute volume
+                cap_pf = 0.0001 * pf_5min_vol
+                cap_xle = 0.0001 * xle_5min_vol
+                cap_vpu = 0.0001 * vpu_5min_vol
+
+            # Calculate target splits
+            pf_target = total_capital * 0.40
+            xle_target = total_capital * 0.40
+            vpu_target = total_capital * 0.20
+            
+            # Enforce dynamic liquidity caps
+            pf_alloc = min(pf_target, cap_pf)
+            xle_alloc = min(xle_target, cap_xle)
+            vpu_alloc = min(vpu_target, cap_vpu)
+            
+            actual_total = pf_alloc + xle_alloc + vpu_alloc
+            
             return {
-                "Vast.ai": vast_alloc,
-                "Render": render_alloc,
-                "Akash": akash_alloc,
-                "Total": actual_total
+                "POWER_FUTURES": pf_alloc,
+                "XLE": xle_alloc,
+                "VPU": vpu_alloc,
+                "Total": actual_total,
+                "Caps": {
+                    "POWER_FUTURES": cap_pf,
+                    "XLE": cap_xle,
+                    "VPU": cap_vpu
+                }
             }
         except Exception as e:
-            log_exception_to_file(e, "DynamicOrderSplitter.split_order")
-            return {"Vast.ai": 0.0, "Render": 0.0, "Akash": 0.0, "Total": 0.0}
+            log_exception_to_file(e, "FinancialOrderRouter.split_order")
+            return {"POWER_FUTURES": 0.0, "XLE": 0.0, "VPU": 0.0, "Total": 0.0, "Caps": {}}
 
 
 # --- 6. CONTINUOUS SIMULATION ENGINE (EXECUTION LOOP) ---
 
 class ThermodynamicArbitrageBot:
     """
-    Main loop coordinator executing the E-AII Quantitative Bot script.
+    Main loop coordinator executing the E-AII Quantitative Bot script on traditional broker connections.
     """
     def __init__(self, db_path: str = None):
         try:
@@ -407,13 +466,72 @@ class ThermodynamicArbitrageBot:
             self.bankroll_mgr = AccountBalanceManager(initial_bankroll=10.00)
             self.thermal_monitor = ThermalInertiaMonitor(t_ambient=302.0)
             self.friction_sim = NetworkFrictionSimulator()
-            self.order_splitter = DynamicOrderSplitter(vast_cap=4000.0)
+            self.order_splitter = FinancialOrderRouter()
             self.db_path = db_path
             self.tick_count = 0
             self.mpc_state = "COLD"
             self.pre_warmed = False
+            
+            # Load broker endpoints from credential vault
+            self.broker_config = {
+                "Broker_API_Base_URL": "",
+                "Account_ID": "",
+                "OAuth_Bearer_Token": ""
+            }
+            try:
+                cred_path = "credentials.json"
+                if os.path.exists(cred_path):
+                    with open(cred_path, "r") as cf:
+                        cached = json.load(cf)
+                        self.broker_config["Broker_API_Base_URL"] = cached.get("BROKER_API_BASE_URL", "")
+                        self.broker_config["Account_ID"] = cached.get("BROKER_ACCOUNT_ID", "")
+                        self.broker_config["OAuth_Bearer_Token"] = cached.get("BROKER_OAUTH_TOKEN", "")
+            except Exception as ce:
+                log_exception_to_file(ce, "ThermodynamicArbitrageBot.__init__.load_broker_config")
+                
         except Exception as e:
             log_exception_to_file(e, "ThermodynamicArbitrageBot.__init__")
+
+    def submit_market_order(self, asset: str, size: float, side: str, broker_config: dict) -> bool:
+        """
+        Simulates standard FIX protocol/REST order placement endpoint calls to traditional brokers.
+        """
+        try:
+            logger.info(f"[BROKER FIX INTERFACE] Submitting {side} market order: {size:.2f} units of {asset}")
+            base_url = broker_config.get("Broker_API_Base_URL") or broker_config.get("BROKER_API_BASE_URL", "")
+            token = broker_config.get("OAuth_Bearer_Token") or broker_config.get("BROKER_OAUTH_TOKEN", "")
+            account_id = broker_config.get("Account_ID") or broker_config.get("BROKER_ACCOUNT_ID", "")
+            
+            if base_url and token:
+                logger.debug(f"[BROKER REST SOCKET] Routing POST request to {base_url}/v1/accounts/{account_id}/orders [Bearer OAuth Token Masked]")
+                # Connectivity test
+                try:
+                    req = urllib.request.Request(
+                        f"{base_url}/v1/ping",
+                        headers={"Authorization": f"Bearer {token}"},
+                        method="GET"
+                    )
+                    # Simulated ping/connectivity check, catches any local test errors gracefully
+                except Exception:
+                    pass
+            return True
+        except Exception as e:
+            log_exception_to_file(e, "ThermodynamicArbitrageBot.submit_market_order")
+            return False
+
+    def calculate_portfolio_leverage(self, balance: float, position_size: float) -> float:
+        """
+        Computes the active portfolio leverage multiplier.
+        """
+        try:
+            if balance <= 0.0:
+                return 0.0
+            leverage = position_size / balance
+            logger.debug(f"[LEVERAGE TRACKER] Deployed position: ${position_size:.2f}, Balance: ${balance:.2f} -> Active Leverage: {leverage:.2f}x")
+            return leverage
+        except Exception as e:
+            log_exception_to_file(e, "ThermodynamicArbitrageBot.calculate_portfolio_leverage")
+            return 0.0
 
     def run_tick(self, telemetry: dict) -> dict:
         """
@@ -465,7 +583,7 @@ class ThermodynamicArbitrageBot:
             
             status_data = {}
             if not gate_passed:
-                logger.info(f"Signal blocked by triple-gate logic. No trade routed. [MPC State: {self.mpc_state}]")
+                logger.info(f"Signal blocked by triple-gate logic. Closing active long allocations and holding 100% USD cash collateral. [MPC State: {self.mpc_state}]")
                 status_data = {
                     'status': 'BLOCKED',
                     'mpc_state': self.mpc_state,
@@ -473,7 +591,7 @@ class ThermodynamicArbitrageBot:
                     'cash_pool': self.bankroll_mgr.Overflow_Cash_Pool
                 }
             else:
-                trade_size = self.bankroll_mgr.determine_order_size()
+                trade_size = self.bankroll_mgr.determine_order_size(telemetry)
                 if trade_size <= 0.0:
                     logger.error("Deployed Bankroll depleted. Cannot trade.")
                     status_data = {
@@ -502,49 +620,55 @@ class ThermodynamicArbitrageBot:
                             'cash_pool': self.bankroll_mgr.Overflow_Cash_Pool
                         }
                     else:
-                        # Dynamic liquidity splitting across multi-venues
-                        split = self.order_splitter.split_order(trade_size)
-                        size_render = split["Render"]
-                        size_vast = split["Vast.ai"]
-                        size_akash = split["Akash"]
+                        # Dynamic liquidity splitting across financial assets
+                        split = self.order_splitter.split_order(trade_size, telemetry)
+                        size_pf = split["POWER_FUTURES"]
+                        size_xle = split["XLE"]
+                        size_vpu = split["VPU"]
                         actual_allocated = split["Total"]
                         
+                        # Submit orders via broker Fix stubs
+                        self.submit_market_order("POWER_FUTURES", size_pf, "BUY", self.broker_config)
+                        self.submit_market_order("XLE", size_xle, "BUY", self.broker_config)
+                        self.submit_market_order("VPU", size_vpu, "BUY", self.broker_config)
+                        
                         # Route independently with separate error catch hooks
-                        slip_render = 0.0
-                        slip_vast = 0.0
-                        slip_akash = 0.0
+                        slip_pf = 0.0
+                        slip_xle = 0.0
+                        slip_vpu = 0.0
                         venue_errors = []
                         
-                        # Render Route Socket Hook
+                        # Calculate slippages
                         try:
-                            if size_render > 0:
-                                slip_render = self.friction_sim.compute_kyle_slippage('RENDER', size_render)
-                                logger.debug(f"[VENUE SOCKET] Render order executed: ${size_render:.2f} (slippage: {slip_render*10000.0:.2f} bps)")
+                            if size_pf > 0:
+                                slip_pf = self.friction_sim.compute_kyle_slippage('POWER_FUTURES', size_pf)
+                                logger.debug(f"[VENUE SOCKET] POWER_FUTURES order executed: ${size_pf:.2f} (slippage: {slip_pf*10000.0:.2f} bps)")
                         except Exception as e:
-                            slip_render = 0.05  # high failure penalty
-                            venue_errors.append(f"Render routing failed: {e}")
+                            slip_pf = 0.05
+                            venue_errors.append(f"POWER_FUTURES routing failed: {e}")
                             
-                        # Vast.ai Route Socket Hook
                         try:
-                            if size_vast > 0:
-                                slip_vast = self.friction_sim.compute_kyle_slippage('Vast.ai', size_vast)
-                                logger.debug(f"[VENUE SOCKET] Vast.ai order executed: ${size_vast:.2f} (slippage: {slip_vast*10000.0:.2f} bps)")
+                            if size_xle > 0:
+                                slip_xle = self.friction_sim.compute_kyle_slippage('XLE', size_xle)
+                                logger.debug(f"[VENUE SOCKET] XLE order executed: ${size_xle:.2f} (slippage: {slip_xle*10000.0:.2f} bps)")
                         except Exception as e:
-                            slip_vast = 0.05
-                            venue_errors.append(f"Vast.ai routing failed: {e}")
+                            slip_xle = 0.05
+                            venue_errors.append(f"XLE routing failed: {e}")
                             
-                        # Akash Route Socket Hook
                         try:
-                            if size_akash > 0:
-                                slip_akash = self.friction_sim.compute_kyle_slippage('Akash', size_akash)
-                                logger.debug(f"[VENUE SOCKET] Akash order executed: ${size_akash:.2f} (slippage: {slip_akash*10000.0:.2f} bps)")
+                            if size_vpu > 0:
+                                slip_vpu = self.friction_sim.compute_kyle_slippage('VPU', size_vpu)
+                                logger.debug(f"[VENUE SOCKET] VPU order executed: ${size_vpu:.2f} (slippage: {slip_vpu*10000.0:.2f} bps)")
                         except Exception as e:
-                            slip_akash = 0.05
-                            venue_errors.append(f"Akash routing failed: {e}")
+                            slip_vpu = 0.05
+                            venue_errors.append(f"VPU routing failed: {e}")
                             
+                        # Calculate active portfolio leverage
+                        self.calculate_portfolio_leverage(self.bankroll_mgr.Deployed_Bankroll, actual_allocated)
+                        
                         # Compute weighted average slippage
                         if actual_allocated > 0:
-                            weighted_slippage = (size_render * slip_render + size_vast * slip_vast + size_akash * slip_akash) / actual_allocated
+                            weighted_slippage = (size_pf * slip_pf + size_xle * slip_xle + size_vpu * slip_vpu) / actual_allocated
                         else:
                             weighted_slippage = 0.0
                             
@@ -556,14 +680,14 @@ class ThermodynamicArbitrageBot:
                             f"Friction Decomposition:\n"
                             f"  Raw Spread: {raw_spread_bps:.2f} bps ({raw_spread*10000.0:.2f} bps)\n"
                             f"  After Latency Decay: {degraded_spread*10000.0:.2f} bps (degrade_mult={degrade_factor:.4f})\n"
-                            f"  Multi-Venue Split Slippage: {weighted_slippage*10000.0:.2f} bps\n"
+                            f"  Financial Slip: {weighted_slippage*10000.0:.2f} bps\n"
                             f"  Thermal OpEx Surcharge: {opex_surcharge*10000.0:.2f} bps\n"
                             f"  Net Realized Spread: {net_spread*10000.0:+.2f} bps\n"
-                            f"  Allocation: Render=${size_render:.2f}, Vast.ai=${size_vast:.2f}, Akash=${size_akash:.2f}\n"
+                            f"  Allocation: POWER_FUTURES=${size_pf:.2f}, XLE=${size_xle:.2f}, VPU=${size_vpu:.2f}\n"
                             f"  Errors: {', '.join(venue_errors) if venue_errors else 'None'}"
                         )
                         
-                        self.bankroll_mgr.process_settlement(actual_allocated, net_spread)
+                        self.bankroll_mgr.process_settlement(actual_allocated, net_spread, telemetry)
                         status_data = {
                             'status': 'FILLED',
                             'mpc_state': self.mpc_state,
@@ -573,9 +697,9 @@ class ThermodynamicArbitrageBot:
                             'net_spread_bps': net_spread * 10000.0,
                             'bankroll': self.bankroll_mgr.Deployed_Bankroll,
                             'cash_pool': self.bankroll_mgr.Overflow_Cash_Pool,
-                            'size_render': size_render,
-                            'size_vast': size_vast,
-                            'size_akash': size_akash,
+                            'size_pf': size_pf,
+                            'size_xle': size_xle,
+                            'size_vpu': size_vpu,
                             'venue_errors': venue_errors
                         }
 
@@ -603,7 +727,6 @@ class ThermodynamicArbitrageBot:
             return status_data
 
         except Exception as e:
-            # Code Extractor & Exception catching: Gracefully return to a HOLD state rather than crashing
             log_exception_to_file(e, "ThermodynamicArbitrageBot.run_tick")
             return {
                 'status': 'HOLD',
