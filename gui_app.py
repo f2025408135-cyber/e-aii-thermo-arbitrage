@@ -11,6 +11,8 @@ import json
 import threading
 import math
 import subprocess
+import urllib.request
+import urllib.error
 
 # --- 0. PIP DEPENDENCY AUTO-INSTALLER ---
 def auto_install_dependencies():
@@ -113,13 +115,28 @@ LEDGER_FILE = "bot_execution_ledger.json"
 
 # --- 1. SECURE CREDENTIAL VAULT ---
 def load_cached_credentials() -> dict:
+    defaults = {
+        "AWS_ACCESS_KEY": "",
+        "AWS_SECRET_KEY": "",
+        "VASTAI_API_KEY": "",
+        "DEEPSEEK_V4_API_KEY": "",
+        "OPENCODE_ZEN_API_KEY": "",
+        "GROQ_API_KEY": "",
+        "GOOGLE_AI_STUDIO_API_KEY": "",
+        "OPENROUTER_API_KEY": ""
+    }
     try:
         if os.path.exists(CREDENTIALS_FILE):
             with open(CREDENTIALS_FILE, "r") as f:
-                return json.load(f)
+                cached = json.load(f)
+                # Merge cached with defaults
+                for k, v in defaults.items():
+                    if k not in cached:
+                        cached[k] = v
+                return cached
     except Exception:
         pass
-    return {"AWS_ACCESS_KEY": "", "AWS_SECRET_KEY": "", "VASTAI_API_KEY": "", "DEEPSEEK_V4_API_KEY": ""}
+    return defaults
 
 def save_credentials(creds: dict):
     try:
@@ -131,6 +148,115 @@ def save_credentials(creds: dict):
         pass
 
 cached_creds = load_cached_credentials()
+
+# --- MULTI-MODEL FALLBACK ROUTER ---
+class MultiModelRouter:
+    def __init__(self, opencode_key, groq_key, google_key, openrouter_key):
+        self.providers = [
+            {
+                "name": "OpenCode Zen",
+                "url": "https://opencode.ai/zen/v1/chat/completions",
+                "key": opencode_key,
+                "model": "deepseek-v4-flash-free",
+                "headers": {
+                    "Content-Type": "application/json",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                }
+            },
+            {
+                "name": "Groq",
+                "url": "https://api.groq.com/openai/v1/chat/completions",
+                "key": groq_key,
+                "model": "llama-3.3-70b-versatile",
+                "headers": {
+                    "Content-Type": "application/json",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                }
+            },
+            {
+                "name": "Google AI Studio",
+                "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+                "key": google_key,
+                "model": "gemini-2.5-flash",
+                "headers": {
+                    "Content-Type": "application/json",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                }
+            },
+            {
+                "name": "OpenRouter",
+                "url": "https://openrouter.ai/api/v1/chat/completions",
+                "key": openrouter_key,
+                "model": "meta-llama/llama-3.3-70b-instruct:free",
+                "headers": {
+                    "Content-Type": "application/json",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "HTTP-Referer": "https://localhost",
+                    "X-Title": "E-AII Bot"
+                }
+            }
+        ]
+
+    def chat_completion(self, messages):
+        errors = []
+        for provider in self.providers:
+            if not provider["key"]:
+                errors.append(f"{provider['name']}: No API Key provided")
+                continue
+            
+            headers = provider["headers"].copy()
+            headers["Authorization"] = f"Bearer {provider['key']}"
+            
+            payload = {
+                "model": provider["model"],
+                "messages": messages
+            }
+            
+            req = urllib.request.Request(
+                provider["url"],
+                data=json.dumps(payload).encode('utf-8'),
+                headers=headers,
+                method="POST"
+            )
+            
+            try:
+                with urllib.request.urlopen(req, timeout=15) as response:
+                    res_body = response.read().decode('utf-8')
+                    data = json.loads(res_body)
+                    content = data["choices"][0]["message"]["content"]
+                    return {
+                        "success": True,
+                        "content": content,
+                        "provider": provider["name"],
+                        "model": provider["model"],
+                        "errors": errors
+                    }
+            except urllib.error.HTTPError as e:
+                err_msg = f"{provider['name']} ({provider['model']}) failed: HTTP Error {e.code}: {e.reason}"
+                try:
+                    err_msg += f" - Response: {e.read().decode('utf-8')}"
+                except:
+                    pass
+                try:
+                    with open("gui_runtime_error.log", "a") as f:
+                        f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {err_msg}\n")
+                except:
+                    pass
+                errors.append(err_msg)
+            except Exception as e:
+                err_msg = f"{provider['name']} ({provider['model']}) failed: {e}"
+                try:
+                    with open("gui_runtime_error.log", "a") as f:
+                        f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {err_msg}\n")
+                except:
+                    pass
+                errors.append(err_msg)
+                
+        return {
+            "success": False,
+            "content": "All configured models failed to respond.",
+            "errors": errors
+        }
 
 # Sidebar Setup
 st.sidebar.markdown(
@@ -153,16 +279,39 @@ aws_secret_key = st.sidebar.text_input("AWS Secret Access Key", value=cached_cre
 vastai_api_key = st.sidebar.text_input("Vast.ai API Key", value=cached_creds.get("VASTAI_API_KEY", ""), type="password", disabled=inputs_disabled)
 deepseek_api_key = st.sidebar.text_input("DeepSeek V4 API Key", value=cached_creds.get("DEEPSEEK_V4_API_KEY", ""), type="password", disabled=inputs_disabled)
 
+st.sidebar.markdown(
+    """
+    <div style='text-align: center; margin-top: 1.0rem;'>
+        <h2 style='font-family: Orbitron; color: #00f2fe; font-size: 1.1rem;'>🤖 CO-PILOT KEYS</h2>
+        <hr style='border-color: rgba(0, 242, 254, 0.2); margin-top: 0.2rem; margin-bottom: 0.5rem;' />
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+opencode_api_key = st.sidebar.text_input("OpenCode Zen API Key", value=cached_creds.get("OPENCODE_ZEN_API_KEY", ""), type="password", disabled=inputs_disabled)
+groq_api_key = st.sidebar.text_input("Groq API Key", value=cached_creds.get("GROQ_API_KEY", ""), type="password", disabled=inputs_disabled)
+google_api_key = st.sidebar.text_input("Google AI Studio API Key", value=cached_creds.get("GOOGLE_AI_STUDIO_API_KEY", ""), type="password", disabled=inputs_disabled)
+openrouter_api_key = st.sidebar.text_input("OpenRouter API Key", value=cached_creds.get("OPENROUTER_API_KEY", ""), type="password", disabled=inputs_disabled)
+
 # Save on edit
 if (aws_access_key != cached_creds.get("AWS_ACCESS_KEY") or
     aws_secret_key != cached_creds.get("AWS_SECRET_KEY") or
     vastai_api_key != cached_creds.get("VASTAI_API_KEY") or
-    deepseek_api_key != cached_creds.get("DEEPSEEK_V4_API_KEY")):
+    deepseek_api_key != cached_creds.get("DEEPSEEK_V4_API_KEY") or
+    opencode_api_key != cached_creds.get("OPENCODE_ZEN_API_KEY") or
+    groq_api_key != cached_creds.get("GROQ_API_KEY") or
+    google_api_key != cached_creds.get("GOOGLE_AI_STUDIO_API_KEY") or
+    openrouter_api_key != cached_creds.get("OPENROUTER_API_KEY")):
     save_credentials({
         "AWS_ACCESS_KEY": aws_access_key,
         "AWS_SECRET_KEY": aws_secret_key,
         "VASTAI_API_KEY": vastai_api_key,
-        "DEEPSEEK_V4_API_KEY": deepseek_api_key
+        "DEEPSEEK_V4_API_KEY": deepseek_api_key,
+        "OPENCODE_ZEN_API_KEY": opencode_api_key,
+        "GROQ_API_KEY": groq_api_key,
+        "GOOGLE_AI_STUDIO_API_KEY": google_api_key,
+        "OPENROUTER_API_KEY": openrouter_api_key
     })
 
 # --- 2. ASYNC ENGINE LOOP COORDINATION ---
@@ -332,7 +481,7 @@ with m_col4:
     )
 
 st.markdown("<br/>", unsafe_allow_html=True)
-t1, t2 = st.tabs(["📈 Trajectory Signals", "📋 Live Transaction Ledger"])
+t1, t2, t3 = st.tabs(["📈 Trajectory Signals", "📋 Live Transaction Ledger", "🤖 E-AII Copilot"])
 
 with t1:
     st.subheader("Model Predictive Control (mpcsignal) Trajectory")
@@ -366,6 +515,52 @@ with t2:
             st.info("Loading ledger dataframe...")
     else:
         st.info("No ticks executed yet.")
+
+with t3:
+    st.subheader("🤖 E-AII Copilot chat desk")
+    
+    # Initialize chat history
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+        
+    # Render chat messages
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+            
+    # Input field
+    if prompt := st.chat_input("Ask the E-AII Copilot..."):
+        # Display user message
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+            
+        # Get response using MultiModelRouter
+        with st.chat_message("assistant"):
+            status_placeholder = st.empty()
+            status_placeholder.info("Routing query to models...")
+            
+            router = MultiModelRouter(
+                opencode_key=opencode_api_key,
+                groq_key=groq_api_key,
+                google_key=google_api_key,
+                openrouter_key=openrouter_api_key
+            )
+            
+            result = router.chat_completion([{"role": "user", "content": prompt}])
+            
+            status_placeholder.empty()
+            if result["success"]:
+                response_text = result["content"]
+                footer = f"\n\n---\n*⚡ Serviced by: **{result['provider']}** (model: `{result['model']}`)*"
+                full_response = response_text + footer
+                st.markdown(full_response)
+                st.session_state.messages.append({"role": "assistant", "content": full_response})
+            else:
+                err_details = "\n".join([f"- {e}" for e in result["errors"]])
+                full_response = f"❌ All models failed to respond.\n\n**Error logs:**\n{err_details}"
+                st.error(full_response)
+                st.session_state.messages.append({"role": "assistant", "content": full_response})
 
 # Autorefresh when running
 if st.session_state.bot_running:
