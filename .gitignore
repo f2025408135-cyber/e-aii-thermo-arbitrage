@@ -1,0 +1,32 @@
+# Ignore all files by default
+*
+
+# Allow directories to be scanned
+!*/
+
+# Allow E-AII reports
+!E-AII_Alpha_Validation_Report.txt
+!E-AII_Alpha_Validation_Report_FINAL.txt
+
+# Allow E-AII GUI and Terminal Agent scripts
+!dashboard_app.py
+!gui_app.py
+!terminal_agent.py
+!forward_oos_test.py
+!Alpha2_Deep_Specification_Manuscript.md
+
+# Allow E-AII engine folder and its contents
+!e_aii_engine/
+!e_aii_engine/**
+
+# Explicitly ignore local credentials, ledgers, error logs, and pycache
+credentials.json
+bot_execution_ledger.json
+iteration_ledger.json
+bot_runtime_error.log
+terminal_runtime_error.log
+gui_runtime_error.log
+*.db
+__pycache__/
+.git/
+.gitignore

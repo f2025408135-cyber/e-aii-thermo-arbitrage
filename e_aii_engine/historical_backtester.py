@@ -271,7 +271,7 @@ def run_hardened_backtest():
         
         if res_g['gated_lock']:
             if res_g['timeline_penalty'] == -1:
-                signal = "SHORT / AVOID INDEFINITELY (Unrecoverable geopolitical/thermal barrier)"
+                signal = "AVOID INDEFINITELY (Unrecoverable geopolitical/thermal barrier)"
             else:
                 signal = f"AVOID / DELAY (Chronological timeline penalty = {res_g['timeline_penalty']} Years)"
         else:

@@ -172,7 +172,7 @@ def run_real_weekly_backtest():
             if is_locked or m_drift > 1.10:
                 gate_status = "LOCKED"
                 if token_delta <= -0.15:
-                    route = "SHORT/AVOID (Severe Drawdown & Thermal Wall)"
+                    route = "SUBLEASE_HOLD (Severe Drawdown & Thermal Wall)"
                 else:
                     route = "AVOID (Hurdle Rate Breach)"
             else:

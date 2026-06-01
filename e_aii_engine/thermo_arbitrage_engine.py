@@ -487,7 +487,7 @@ def run_engine_diagnostics():
         # Tactical Routing Signal
         if res_val['gated_lock']:
             if res_val['timeline_penalty'] == -1:
-                signal = "SHORT / AVOID INDEFINITELY (Unrecoverable cascade collapse)"
+                signal = "AVOID INDEFINITELY (Unrecoverable cascade collapse)"
             else:
                 signal = f"AVOID / DELAY (Chronological timeline penalty = {res_val['timeline_penalty']} Years)"
         else:

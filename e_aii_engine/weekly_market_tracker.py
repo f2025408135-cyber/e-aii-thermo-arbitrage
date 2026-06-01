@@ -157,7 +157,7 @@ class WeeklyVolatilityTracker:
             if is_locked or m_drift > 1.10:
                 # High wind stagnation or severe token drawdowns trigger lock
                 if token_delta <= -0.15:
-                    route = "GATE_LOCKED / SHORT/AVOID (Severe Drawdown & Thermal Wall)"
+                    route = "GATE_LOCKED / SUBLEASE_HOLD (Severe Drawdown & Thermal Wall)"
                 else:
                     route = "GATE_LOCKED / AVOID (Hurdle Rate Breach)"
             else:
