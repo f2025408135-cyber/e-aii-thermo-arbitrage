@@ -343,6 +343,7 @@ class AsyncBotRunner:
 
         idx = 0
         stagnation_ticks_left = 0
+        warmup_ticks_left = 0
         while True:
             with self.lock:
                 if not self.running:
@@ -354,14 +355,39 @@ class AsyncBotRunner:
             idx = (idx + 1) % num_rows
             
             stagnation_override = False
+            future_m_drift = 0.0
+            
             if inject_active:
                 if stagnation_ticks_left > 0:
                     stagnation_ticks_left -= 1
                     stagnation_override = True
+                elif warmup_ticks_left > 0:
+                    warmup_ticks_left -= 1
+                    future_m_drift = 1.65
+                    if warmup_ticks_left == 0:
+                        stagnation_ticks_left = 15
                 else:
                     if random.random() < 0.05:
-                        stagnation_ticks_left = 15
-                        stagnation_override = True
+                        warmup_ticks_left = 5
+                        future_m_drift = 1.65
+            else:
+                # Look ahead 15 ticks (30s) in df
+                future_idx = (idx + 15) % num_rows
+                f_row = df.iloc[future_idx].to_dict()
+                u_wind_f = math.sqrt(f_row.get('raw_u', 2.0)**2 + f_row.get('raw_v', 1.5)**2)
+                ahf_f = f_row.get('raw_ahf', 40.0)
+                cin_f = f_row.get('cin', -20.0)
+                cape_f = f_row.get('cape', 500.0)
+                tau_infra_f = f_row.get('tau_infra', 4.0)
+                fossil_fraction_f = f_row.get('fossil_fraction', 0.65)
+                
+                r_stag_f = 0.4272 / max(u_wind_f, 0.01)
+                r_ahf_f = ahf_f / 50.0
+                r_cin_f = abs(cin_f) / 50.0
+                r_cape_f = cape_f / 2000.0
+                r_tau_f = math.log(1.0 + tau_infra_f) / math.log(11.0)
+                r_fossil_f = 1.0 + 0.5 * fossil_fraction_f
+                future_m_drift = (r_stag_f * r_ahf_f * r_cin_f * (1.0 + r_cape_f) * r_tau_f * r_fossil_f) / 2.5
             
             telemetry_tick = {
                 'u_wind': math.sqrt(row.get('raw_u', 2.0)**2 + row.get('raw_v', 1.5)**2),
@@ -371,7 +397,8 @@ class AsyncBotRunner:
                 'tau_infra': row.get('tau_infra', 4.0),
                 'fossil_fraction': row.get('fossil_fraction', 0.65),
                 'raw_spread_bps': 3450.0 if stagnation_override else (row.get('mpcsignal', 1.5) * 1000.0),
-                'stagnation_override': stagnation_override
+                'stagnation_override': stagnation_override,
+                'future_m_drift': future_m_drift
             }
             
             # Execute one step on the defensive engine

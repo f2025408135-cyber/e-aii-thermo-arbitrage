@@ -90,6 +90,24 @@ def run_headless_agent():
             idx = (idx + 1) % num_rows
             tick_count += 1
             
+            # Look ahead 15 ticks (30s) in df to calculate future predicted drift
+            future_idx = (idx + 15) % num_rows
+            f_row = df.iloc[future_idx].to_dict()
+            u_wind_f = math.sqrt(f_row.get('raw_u', 2.0)**2 + f_row.get('raw_v', 1.5)**2)
+            ahf_f = f_row.get('raw_ahf', 40.0)
+            cin_f = f_row.get('cin', -20.0)
+            cape_f = f_row.get('cape', 500.0)
+            tau_infra_f = f_row.get('tau_infra', 4.0)
+            fossil_fraction_f = f_row.get('fossil_fraction', 0.65)
+            
+            r_stag_f = 0.4272 / max(u_wind_f, 0.01)
+            r_ahf_f = ahf_f / 50.0
+            r_cin_f = abs(cin_f) / 50.0
+            r_cape_f = cape_f / 2000.0
+            r_tau_f = math.log(1.0 + tau_infra_f) / math.log(11.0)
+            r_fossil_f = 1.0 + 0.5 * fossil_fraction_f
+            future_m_drift = (r_stag_f * r_ahf_f * r_cin_f * (1.0 + r_cape_f) * r_tau_f * r_fossil_f) / 2.5
+            
             # Formulate environmental inputs
             telemetry_tick = {
                 'u_wind': math.sqrt(row.get('raw_u', 2.0)**2 + row.get('raw_v', 1.5)**2),
@@ -98,7 +116,8 @@ def run_headless_agent():
                 'cape': row.get('cape', 500.0),
                 'tau_infra': row.get('tau_infra', 4.0),
                 'fossil_fraction': row.get('fossil_fraction', 0.65),
-                'raw_spread_bps': row.get('mpcsignal', 1.5) * 1000.0
+                'raw_spread_bps': row.get('mpcsignal', 1.5) * 1000.0,
+                'future_m_drift': future_m_drift
             }
             
             # Execute step on the defensive bot engine

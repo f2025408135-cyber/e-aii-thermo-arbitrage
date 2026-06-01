@@ -284,7 +284,8 @@ class NetworkFrictionSimulator:
     """
     VENUES = {
         'RENDER': {'lambda_dollar': 5.00e-08, 'v_daily': 30_000_000.0, 'sigma': 0.05, 'c_sqrt': 0.50},
-        'Vast.ai': {'lambda_dollar': 5.00e-05, 'v_daily': 100_000.0, 'sigma': 0.25, 'c_sqrt': 2.00}
+        'Vast.ai': {'lambda_dollar': 5.00e-05, 'v_daily': 100_000.0, 'sigma': 0.25, 'c_sqrt': 2.00},
+        'Akash': {'lambda_dollar': 1.00e-06, 'v_daily': 5_000_000.0, 'sigma': 0.10, 'c_sqrt': 1.00}
     }
 
     def __init__(self, mu_seconds: float = 30.0, sigma_seconds: float = 10.0):
@@ -360,7 +361,41 @@ class NetworkFrictionSimulator:
             return 0.50
 
 
-# --- 5. CONTINUOUS SIMULATION ENGINE (EXECUTION LOOP) ---
+# --- 5. DYNAMIC ORDER SPLITTER ---
+class DynamicOrderSplitter:
+    """
+    Splits orders dynamically across venues:
+    - Vast.ai: 35%
+    - Render: 45%
+    - Akash: 20%
+    Enforces a strict cap of $4,000 on Vast.ai allocation.
+    """
+    def __init__(self, vast_cap: float = 4000.0):
+        self.vast_cap = vast_cap
+
+    def split_order(self, total_capital: float) -> dict:
+        try:
+            vast_alloc = total_capital * 0.35
+            render_alloc = total_capital * 0.45
+            akash_alloc = total_capital * 0.20
+            
+            # Enforce Vast.ai strict cap
+            if vast_alloc > self.vast_cap:
+                vast_alloc = self.vast_cap
+                
+            actual_total = vast_alloc + render_alloc + akash_alloc
+            return {
+                "Vast.ai": vast_alloc,
+                "Render": render_alloc,
+                "Akash": akash_alloc,
+                "Total": actual_total
+            }
+        except Exception as e:
+            log_exception_to_file(e, "DynamicOrderSplitter.split_order")
+            return {"Vast.ai": 0.0, "Render": 0.0, "Akash": 0.0, "Total": 0.0}
+
+
+# --- 6. CONTINUOUS SIMULATION ENGINE (EXECUTION LOOP) ---
 
 class ThermodynamicArbitrageBot:
     """
@@ -372,8 +407,11 @@ class ThermodynamicArbitrageBot:
             self.bankroll_mgr = AccountBalanceManager(initial_bankroll=10.00)
             self.thermal_monitor = ThermalInertiaMonitor(t_ambient=302.0)
             self.friction_sim = NetworkFrictionSimulator()
+            self.order_splitter = DynamicOrderSplitter(vast_cap=4000.0)
             self.db_path = db_path
             self.tick_count = 0
+            self.mpc_state = "COLD"
+            self.pre_warmed = False
         except Exception as e:
             log_exception_to_file(e, "ThermodynamicArbitrageBot.__init__")
 
@@ -402,6 +440,18 @@ class ThermodynamicArbitrageBot:
                 
             gate_passed = self.monitor.evaluate_gate(u_wind, ahf, m_drift)
             
+            # --- PRE-FLIGHT MPC REFLIGHT WARMUP CHECK ---
+            future_m_drift = telemetry.get('future_m_drift', 0.0)
+            
+            if gate_passed:
+                self.mpc_state = "ACTIVE"
+            elif future_m_drift > 1.50:
+                self.mpc_state = "PRE_FLIGHT_WARMUP"
+                self.pre_warmed = True
+                logger.info(f"[MPC] Transitioned to PRE_FLIGHT_WARMUP. Future predicted M_drift = {future_m_drift:.2f}. Pre-warming connection sockets...")
+            else:
+                self.mpc_state = "COLD"
+                
             q_diss = self.thermal_monitor.update_thermal_memory(
                 dt_hours=5.0 / 60.0,
                 is_stagnation_active=(u_wind < 0.4272 and ahf >= 100.0),
@@ -415,28 +465,89 @@ class ThermodynamicArbitrageBot:
             
             status_data = {}
             if not gate_passed:
-                logger.info("Signal blocked by triple-gate logic. No trade routed.")
-                status_data = {'status': 'BLOCKED', 'bankroll': self.bankroll_mgr.Deployed_Bankroll, 'cash_pool': self.bankroll_mgr.Overflow_Cash_Pool}
+                logger.info(f"Signal blocked by triple-gate logic. No trade routed. [MPC State: {self.mpc_state}]")
+                status_data = {
+                    'status': 'BLOCKED',
+                    'mpc_state': self.mpc_state,
+                    'bankroll': self.bankroll_mgr.Deployed_Bankroll,
+                    'cash_pool': self.bankroll_mgr.Overflow_Cash_Pool
+                }
             else:
                 trade_size = self.bankroll_mgr.determine_order_size()
                 if trade_size <= 0.0:
                     logger.error("Deployed Bankroll depleted. Cannot trade.")
-                    status_data = {'status': 'DEPLETED', 'bankroll': self.bankroll_mgr.Deployed_Bankroll, 'cash_pool': self.bankroll_mgr.Overflow_Cash_Pool}
+                    status_data = {
+                        'status': 'DEPLETED',
+                        'mpc_state': self.mpc_state,
+                        'bankroll': self.bankroll_mgr.Deployed_Bankroll,
+                        'cash_pool': self.bankroll_mgr.Overflow_Cash_Pool
+                    }
                 else:
-                    delay_sec = self.friction_sim.simulate_latency_delay()
+                    # MPC Latency Neutralization check
+                    if self.pre_warmed:
+                        delay_sec = 0.5  # Neutralized latency delay
+                        logger.info("[MPC] Pre-flight warmup active. Latency decay neutralized to 0.5s!")
+                        self.pre_warmed = False  # Reset pre-warm
+                    else:
+                        delay_sec = self.friction_sim.simulate_latency_delay()
+                        
                     degrade_factor = self.friction_sim.compute_spread_degradation(delay_sec)
                     
                     if degrade_factor <= 0.0:
                         logger.warning("Trade missed completely due to latency delay.")
-                        status_data = {'status': 'MISSED', 'bankroll': self.bankroll_mgr.Deployed_Bankroll, 'cash_pool': self.bankroll_mgr.Overflow_Cash_Pool}
+                        status_data = {
+                            'status': 'MISSED',
+                            'mpc_state': self.mpc_state,
+                            'bankroll': self.bankroll_mgr.Deployed_Bankroll,
+                            'cash_pool': self.bankroll_mgr.Overflow_Cash_Pool
+                        }
                     else:
-                        size_render = trade_size * 0.70
-                        size_vast = trade_size * 0.30
+                        # Dynamic liquidity splitting across multi-venues
+                        split = self.order_splitter.split_order(trade_size)
+                        size_render = split["Render"]
+                        size_vast = split["Vast.ai"]
+                        size_akash = split["Akash"]
+                        actual_allocated = split["Total"]
                         
-                        slip_render = self.friction_sim.compute_kyle_slippage('RENDER', size_render)
-                        slip_vast = self.friction_sim.compute_kyle_slippage('Vast.ai', size_vast)
+                        # Route independently with separate error catch hooks
+                        slip_render = 0.0
+                        slip_vast = 0.0
+                        slip_akash = 0.0
+                        venue_errors = []
                         
-                        weighted_slippage = 0.70 * slip_render + 0.30 * slip_vast
+                        # Render Route Socket Hook
+                        try:
+                            if size_render > 0:
+                                slip_render = self.friction_sim.compute_kyle_slippage('RENDER', size_render)
+                                logger.debug(f"[VENUE SOCKET] Render order executed: ${size_render:.2f} (slippage: {slip_render*10000.0:.2f} bps)")
+                        except Exception as e:
+                            slip_render = 0.05  # high failure penalty
+                            venue_errors.append(f"Render routing failed: {e}")
+                            
+                        # Vast.ai Route Socket Hook
+                        try:
+                            if size_vast > 0:
+                                slip_vast = self.friction_sim.compute_kyle_slippage('Vast.ai', size_vast)
+                                logger.debug(f"[VENUE SOCKET] Vast.ai order executed: ${size_vast:.2f} (slippage: {slip_vast*10000.0:.2f} bps)")
+                        except Exception as e:
+                            slip_vast = 0.05
+                            venue_errors.append(f"Vast.ai routing failed: {e}")
+                            
+                        # Akash Route Socket Hook
+                        try:
+                            if size_akash > 0:
+                                slip_akash = self.friction_sim.compute_kyle_slippage('Akash', size_akash)
+                                logger.debug(f"[VENUE SOCKET] Akash order executed: ${size_akash:.2f} (slippage: {slip_akash*10000.0:.2f} bps)")
+                        except Exception as e:
+                            slip_akash = 0.05
+                            venue_errors.append(f"Akash routing failed: {e}")
+                            
+                        # Compute weighted average slippage
+                        if actual_allocated > 0:
+                            weighted_slippage = (size_render * slip_render + size_vast * slip_vast + size_akash * slip_akash) / actual_allocated
+                        else:
+                            weighted_slippage = 0.0
+                            
                         raw_spread = raw_spread_bps / 10000.0
                         degraded_spread = raw_spread * degrade_factor
                         net_spread = degraded_spread - weighted_slippage - opex_surcharge
@@ -445,20 +556,27 @@ class ThermodynamicArbitrageBot:
                             f"Friction Decomposition:\n"
                             f"  Raw Spread: {raw_spread_bps:.2f} bps ({raw_spread*10000.0:.2f} bps)\n"
                             f"  After Latency Decay: {degraded_spread*10000.0:.2f} bps (degrade_mult={degrade_factor:.4f})\n"
-                            f"  Weighted Venue Slippage: {weighted_slippage*10000.0:.2f} bps\n"
+                            f"  Multi-Venue Split Slippage: {weighted_slippage*10000.0:.2f} bps\n"
                             f"  Thermal OpEx Surcharge: {opex_surcharge*10000.0:.2f} bps\n"
-                            f"  Net Realized Spread: {net_spread*10000.0:+.2f} bps"
+                            f"  Net Realized Spread: {net_spread*10000.0:+.2f} bps\n"
+                            f"  Allocation: Render=${size_render:.2f}, Vast.ai=${size_vast:.2f}, Akash=${size_akash:.2f}\n"
+                            f"  Errors: {', '.join(venue_errors) if venue_errors else 'None'}"
                         )
                         
-                        self.bankroll_mgr.process_settlement(trade_size, net_spread)
+                        self.bankroll_mgr.process_settlement(actual_allocated, net_spread)
                         status_data = {
                             'status': 'FILLED',
+                            'mpc_state': self.mpc_state,
                             'delay_sec': delay_sec,
                             'degrade_factor': degrade_factor,
                             'weighted_slippage_bps': weighted_slippage * 10000.0,
                             'net_spread_bps': net_spread * 10000.0,
                             'bankroll': self.bankroll_mgr.Deployed_Bankroll,
-                            'cash_pool': self.bankroll_mgr.Overflow_Cash_Pool
+                            'cash_pool': self.bankroll_mgr.Overflow_Cash_Pool,
+                            'size_render': size_render,
+                            'size_vast': size_vast,
+                            'size_akash': size_akash,
+                            'venue_errors': venue_errors
                         }
 
             # --- PERSISTENT CHECKPOINTING: Write tick execution records to local disk shelf ---
