@@ -393,7 +393,13 @@ class ThermodynamicArbitrageBot:
             fossil_fraction = telemetry['fossil_fraction']
             raw_spread_bps = telemetry['raw_spread_bps']
             
-            m_drift = self.monitor.compute_m_drift_from_components(u_wind, ahf, cin, cape, tau_infra, fossil_fraction)
+            if telemetry.get('stagnation_override', False):
+                u_wind = 0.25
+                ahf = 120.0
+                m_drift = 1.45
+            else:
+                m_drift = self.monitor.compute_m_drift_from_components(u_wind, ahf, cin, cape, tau_infra, fossil_fraction)
+                
             gate_passed = self.monitor.evaluate_gate(u_wind, ahf, m_drift)
             
             q_diss = self.thermal_monitor.update_thermal_memory(

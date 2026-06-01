@@ -116,10 +116,10 @@ LEDGER_FILE = "bot_execution_ledger.json"
 # --- 1. SECURE CREDENTIAL VAULT ---
 def load_cached_credentials() -> dict:
     defaults = {
-        "AWS_ACCESS_KEY": "",
-        "AWS_SECRET_KEY": "",
+        "AWS_ACCESS_KEY": "MOCK_AWS_ACCESS_KEY",
+        "AWS_SECRET_KEY": "MOCK_AWS_SECRET_KEY",
         "VASTAI_API_KEY": "",
-        "DEEPSEEK_V4_API_KEY": "",
+        "DEEPSEEK_V4_API_KEY": "MOCK_DEEPSEEK_V4_API_KEY",
         "OPENCODE_ZEN_API_KEY": "",
         "GROQ_API_KEY": "",
         "GOOGLE_AI_STUDIO_API_KEY": "",
@@ -323,6 +323,7 @@ class AsyncBotRunner:
         self.bot = None
 
     def run(self):
+        import random
         # Imports the defensive production bot
         from e_aii_engine.thermo_arbitrage_bot import ThermodynamicArbitrageBot
         self.bot = ThermodynamicArbitrageBot()
@@ -341,14 +342,26 @@ class AsyncBotRunner:
             return
 
         idx = 0
+        stagnation_ticks_left = 0
         while True:
             with self.lock:
                 if not self.running:
                     break
+                inject_active = getattr(self, 'inject_volatility', False)
             
             # Retrieve row and reconstruct expected tick dict
             row = df.iloc[idx].to_dict()
             idx = (idx + 1) % num_rows
+            
+            stagnation_override = False
+            if inject_active:
+                if stagnation_ticks_left > 0:
+                    stagnation_ticks_left -= 1
+                    stagnation_override = True
+                else:
+                    if random.random() < 0.05:
+                        stagnation_ticks_left = 15
+                        stagnation_override = True
             
             telemetry_tick = {
                 'u_wind': math.sqrt(row.get('raw_u', 2.0)**2 + row.get('raw_v', 1.5)**2),
@@ -357,7 +370,8 @@ class AsyncBotRunner:
                 'cape': row.get('cape', 500.0),
                 'tau_infra': row.get('tau_infra', 4.0),
                 'fossil_fraction': row.get('fossil_fraction', 0.65),
-                'raw_spread_bps': row.get('mpcsignal', 1.5) * 1000.0
+                'raw_spread_bps': 3450.0 if stagnation_override else (row.get('mpcsignal', 1.5) * 1000.0),
+                'stagnation_override': stagnation_override
             }
             
             # Execute one step on the defensive engine
@@ -375,6 +389,26 @@ def get_runner():
 
 runner = get_runner()
 
+# Continuous Runtime State Preservation: Sync session state with global cached runner thread status
+if "trading_thread_active" not in st.session_state:
+    st.session_state.trading_thread_active = False
+
+st.session_state.bot_running = runner.running
+st.session_state.trading_thread_active = runner.running
+
+# Sidebar Simulation Setup (placed after runner is defined)
+st.sidebar.markdown(
+    """
+    <div style='text-align: center; margin-top: 1.0rem;'>
+        <h2 style='font-family: Orbitron; color: #00f2fe; font-size: 1.1rem;'>⚙️ SIMULATION SETUP</h2>
+        <hr style='border-color: rgba(0, 242, 254, 0.2); margin-top: 0.2rem; margin-bottom: 0.5rem;' />
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+inject_volatility = st.sidebar.checkbox("🔹 Inject Simulation Volatility Clusters", value=getattr(runner, 'inject_volatility', False))
+runner.inject_volatility = inject_volatility
+
 # UI Layout
 st.markdown('<div class="title-text">⚡ E-AII DUAL-LAYER CONSOLE DESK</div>', unsafe_allow_html=True)
 
@@ -385,8 +419,8 @@ with c1:
     if not st.session_state.bot_running:
         start_btn = st.button("🚀 START AUTONOMOUS ENGINE", use_container_width=True, type="primary")
         if start_btn:
-            if not (aws_access_key and aws_secret_key and vastai_api_key and deepseek_api_key):
-                st.warning("Please supply all validated API keys in the vault first.")
+            if not vastai_api_key:
+                st.warning("Please supply at least the Vast.ai API Key in the vault first.")
             else:
                 st.session_state.bot_running = True
                 with runner.lock:
